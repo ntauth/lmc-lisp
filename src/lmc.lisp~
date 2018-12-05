@@ -1,0 +1,47 @@
+;;;; lmc.lisp
+;;;;
+;;;; @author  Ayoub Chouak (a.chouak@protonmail.com)
+;;;; @brief   AOT LMC Assembler and Execution Engine
+;;;; @license MIT
+;;;;
+
+;;; Functions
+(defun filter (fn lst)
+  (cond ((null lst) nil)
+	((funcall fn (first lst))
+	 (cons (first lst) (filter fn (rest lst))))
+	(T (filter fn (rest lst)))))
+
+;;; Structs
+(defstruct dfa-delta state accept-symbols next-state)
+
+;;; Regex constants
+(defun char-list-range (start end)
+  (cond ((char= start end) (list end))
+	(T (cons start (char-list-range
+			(code-char
+			 (+ (char-code start) 1))
+			end)))))
+
+(defvar [a-z] (char-list-range #\a #\z))
+(defvar [a-z]^ (char-list-range #\A #\Z))
+(defvar [0-9] (char-list-range #\0 #\9))
+
+;;; Lexer
+(defun dfa-delta-test-fn (state delta)
+  (equal state (dfa-delta-state delta)))
+
+(defvar *lex-delta-db*
+  (vector (make-dfa-delta :state "q0"
+			  :accept-symbols (list [a-z]) :next-state "")
+	  (make-dfa-delta :state "q1"
+			  :accept-symbols (list [a-z]^) :next-state "")))
+
+(defvar *lex-initial-state* nil)
+(defvar *lex-final-state* nil)
+
+(defun lex-delta-db-lookup (state)
+  (find state *lex-delta-db* :test #'dfa-delta-test-fn))
+
+;;; DFA (Deterministic Finite Automata)
+(defun dfa-accept (str state mem lex) nil)
