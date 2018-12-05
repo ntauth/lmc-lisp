@@ -31,15 +31,38 @@
 (defvar [0-9] (char-list-range #\0 #\9))
 (defvar \s (list #\Space #\Tab))
 
-;;; Lexer
-(defun dfa-delta (state symbol)
-  (cond ((rx-match symbol \s) nil)))
+;;; @section Lexer
+(defun dfa-delta-chk (state state-chk symbol rx)
+  (and (string= state state-chk) (rx-match symbol rx)))
 
-(defvar *lex-initial-state* nil)
-(defvar *lex-final-state* nil)
+;;; Check if `state` is final
+(defun dfa-final (state)
+  (member state *lex-final-states*))
+
+;;; Delta function handler
+(defun dfa-delta (state symbol mem)
+  (cond ((dfa-delta-chk state "q0" symbol \s)
+         (make-dfa-delta :next-state "q1_ws"))
+        ((dfa-delta-chk state "q1_ws" symbol \s)
+         (make-dfa-delta :next-state "q1_ws"))
+        (T nil)))
+
+;;; Initial and final states
+(defvar *lex-initial-state* "q0")
+(defvar *lex-final-states* (list "q1_ws"))
 
 (defun lex-delta-db-lookup (state)
   (find state *lex-delta-db* :test #'dfa-delta-test-fn))
 
-;;; DFA (Deterministic Finite Automata)
-(defun dfa-accept (str state mem lex) nil)
+;;; @section DFA (Deterministic Finite Automata)
+(defun dfa-accept (str state mem lex)
+  (cond ((> (length str))
+         (let ((next (dfa-delta state (char str 0) mem)))
+           (when (not (null next))
+             (dfa-accept (subseq str 1)
+                         (dfa-delta-next-state next)
+                         (string-append mem (char str 0))
+                         lex)))
+         ;;; Accept
+         ((dfa-final state) (append lex '(mem)))
+         (T nil))))
