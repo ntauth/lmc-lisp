@@ -1,0 +1,34 @@
+//
+// @file  syntax-chk.lmc
+// @brief Syntax check test
+//
+
+/// .text section
+// prolog
+__start add const_1
+
+sub const_0
+lda const_2
+out
+sub 99
+inp
+add null
+brz __end
+sta array_0
+lda const_3
+out
+
+// epilog
+__end hlt
+
+/// .data section
+null dat
+const_0 dat 0
+const_1 dat 37
+const_2 dat 42
+const_3 dat 424
+
+array_0 dat
+dat
+dat
+dat
