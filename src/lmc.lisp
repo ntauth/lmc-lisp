@@ -31,7 +31,11 @@
 ;;; Elvis operator extension
 (defun ?? (assertee fallback)
   (if (not (null assertee)) assertee fallback))
-    
+
+(defun log-error (fmt &rest args)
+  (let ((fmt-err (string-append (string-append "[!] " fmt) "~%")))
+    (format t fmt-err args)))
+
 ;;; @section Structs
 (defstruct dfa-delta next-state output)
 (defstruct lex-token type payload)
@@ -64,7 +68,18 @@
 ;;; Opcode-to-Bytecode translation table
 (defvar *lmc-bytecode-tbl* (list
 			    (cons "add" "1")
-			    (cons "sub" "2")))
+			    (cons "sub" "2")
+			    (cons "sta" "3")
+			    (cons "lda" "5")
+			    (cons "bra" "6")
+			    (cons "brz" "7")
+			    (cons "brp" "8")
+			    (cons "inp" "901")
+			    (cons "out" "902")
+			    (cons "hlt" "000")))
+
+(defun bytecode (opcode)
+  (cdr (find opcode *lmc-bytecode-tbl* :key #'car :test #'string=)))
 
 (defun opcode (str &key (arity -1))
   (find-all str *lmc-opcode-tbl*
@@ -204,32 +219,35 @@
        (cond ((or (string= "$label" (lex-token-type token-la))
 		  (string= "$imm" (lex-token-type token-la)))
 	     ;; Arity = 1
-	     (unless (null (lmc-opcode-arity (first (opcode payload
-							    :arity 1))))
+	     (unless (null (opcode payload :arity 1))
 	       (make-pda-delta :next-state "r1-op-1"
 			       :stack (cons type stack))))
 	     ;; Arity = 0
-	     (T (unless (null (lmc-opcode-arity (first (opcode payload
-							       :arity 0)))))
-		(make-pda-delta :next-state "r2-op"
-				:stack stack))))
+	     (T (unless (null (opcode payload :arity 0))
+		  (make-pda-delta :next-state "r2-op"
+				:stack stack)))))
        ((pda-delta-chk state "r1-lbl" type "$opcode")
 	;; Lookahead for arity
 	(cond ((or (string= "$label" (lex-token-type token-la))
 		   (string= "$imm" (lex-token-type token-la)))
 	     ;; Arity = 1
-	     (unless (null (lmc-opcode-arity (first (opcode payload
-							    :arity 1))))
+	     (unless (null (opcode payload :arity 1))
 	       (make-pda-delta :next-state "r1-op-0"
 			       :stack (cons type stack))))
-	     (T (unless (null (lmc-opcode-arity (first (opcode payload
-							       :arity 0)))))
+	     (T (unless (null (opcode payload :arity 0))
 		(make-pda-delta :next-state "r2-op"
-				:stack (rest stack)))))
+				:stack (rest stack))))))
        ((or (pda-delta-chk state "r1-op-0" type "$imm")
 	    (pda-delta-chk state "r1-op-0" type "$label"))
 	(let* ((delta (make-pda-delta :next-state "r2-op"
 				      :stack (rest (rest stack)))))
+	  (when (or (and (string= type "$imm") (imm-domain-chk payload))
+		    (string= type "$label"))
+	    delta)))
+       ((or (pda-delta-chk state "r1-op-1" type "$imm")
+	    (pda-delta-chk state "r1-op-1" type "$label"))
+	(let* ((delta (make-pda-delta :next-state "r2-op"
+				      :stack (rest stack))))
 	  (when (or (and (string= type "$imm") (imm-domain-chk payload))
 		    (string= type "$label"))
 	    delta)))
@@ -298,10 +316,11 @@
 	aux)))
 
 (defun read-file-to-string (filename)
-  (let ((in (open filename)))
-    (let ((input (read-file-to-string-impl in "")))
-      (close in)
-      input)))
+  (let ((in (open filename :if-does-not-exist nil)))
+    (unless (null in)
+      (let ((input (read-file-to-string-impl in "")))
+	(close in)
+	input))))
 
 
 ;;; @section Execution engine
@@ -318,13 +337,47 @@
   (cond ((null parse) nil)
 	((string= (lex-token-type (first (first parse)))
 		  "$label")
-	 (cons (cons (lex-token-payload (first (first parse))) rva)
+	 (cons (cons (lex-token-payload (first (first parse)))
+		     (write-to-string rva))
 	       (extract-bpt-impl (rest parse) (+ rva 1))))
 	(T (extract-bpt-impl (rest parse) (+ rva 1)))))
 
-(defun extract-bpt (parse)
+;;; @TODO Handle duplicate labels (fail)
+(defun extract-bpt-thunk (parse)
   (extract-bpt-impl parse 0))
-  
+
+(defun extract-bpt (parse)
+  (let ((bpt (extract-bpt-thunk parse)))
+    (let ((bpt-sorted (sort (copy-list bpt) #'string<= :key #'car)))
+      (unless (null (reduce (lambda (x y) (cond ((null x) nil)
+						((string= x y) nil)
+						(T y)))
+			    (mapcar #'car bpt-sorted)))
+	bpt))))
+
+;;; Patches the trimmed instruction with an entry in the BPT
+(defun patch-instr-bpt (instr-t bpt)
+  (let ((last-token (first (last instr-t))))
+    (if (string= (lex-token-type last-token) "$label")
+	(cons (first instr-t)
+	      (list (make-lex-token :type "$imm"
+				    :payload (cdr (assoc (lex-token-payload
+						     last-token)
+						    bpt
+						    :test #'string=)))))
+	instr-t)))
+
+;;; Patches the parsed assembly with the BPT
+(defun patch-parse-bpt (parse bpt)
+  (cond ((null parse) nil)
+	(T (let ((instr (first parse)))
+	     (cond ((string= (lex-token-type (first instr)) "$label")
+		    (let ((instr-t (rest instr)))
+		      (cons (patch-instr-bpt instr-t bpt)
+			    (patch-parse-bpt (rest parse) bpt))))
+		   (T (cons (patch-instr-bpt instr bpt)
+			    (patch-parse-bpt (rest parse) bpt))))))))
+
 (defun parse-unflatten (parse)
   (parse-unflatten-impl parse '() '()))
 
@@ -344,8 +397,12 @@
 				 parse-u))))
 
 (defun parse-to-instrs (parse)
-  (mapcar (lambda (x) (make-lmc-instruction :opcode (first x)
-					    :imm (second x)))
+  (mapcar (lambda (x)
+	    (let* ((opcode (lex-token-payload (first x)))
+		   (imm (if (null (second x)) nil
+			    (lex-token-payload (second x)))))
+		   (make-lmc-instruction :opcode opcode
+					 :imm imm)))
 	  parse))
   
 (defun parse (lex)
@@ -354,17 +411,53 @@
       (let ((parse-u (parse-unflatten lex-s)))
 	parse-u))))
 
-(defun __emit (instr-token) nil)
+(defun normalize-imm-impl (imm &key size)
+  (if (<= size 0)
+      imm
+      (normalize-imm-impl (string-append "0" imm) :size (- size 1)))) 
+
+(defun normalize-imm (imm &key (size 3))
+  (if (null imm)
+      nil
+      (let ((imm-t (write-to-string
+		    (mod (parse-integer imm)
+			 (expt 10 size)))))
+	(normalize-imm-impl imm-t :size (- size (length imm-t))))))
+
+(defun __emit (instr)
+  (let ((opcode (lmc-instruction-opcode instr))
+	(imm (lmc-instruction-imm instr)))
+    (cond ((and (string= opcode "dat") (null imm))
+	   (normalize-imm "0"))
+	  ((string= opcode "dat")
+	   (normalize-imm imm))
+	  (T (string-append (bytecode opcode)
+			    (normalize-imm imm :size 2)))))) 
+	  
 
 (defun assemble (src)
-  (cons (__emit (first src)) (compile (rest src))))
+  (if (null src) nil
+      (cons (__emit (first src)) (assemble (rest src)))))
 
 (defun one-instruction (state) nil)
 (defun execution-loop (state) nil)
 
 (defun lmc-load (filename)
   (let ((asm (read-file-to-string filename)))
-    (extract-bpt (parse (lexify asm)))))
+    (if (null asm)
+	(log-error "Could not open file ~a." filename)
+	(let ((lex (lexify asm)))
+	  (if (null lex)
+	      (log-error "Lexical error: unrecognized sequence.")
+	      (let ((parse (parse lex)))
+		(if (null parse)
+		    (log-error "Syntax error: ill-formed sequence.")
+		    (let ((bpt (extract-bpt parse)))
+		      (if (null bpt)
+			  (log-error "Duplicate label detected.")
+			  (let ((src (parse-to-instrs
+				      (patch-parse-bpt parse bpt))))
+			    (assemble src)))))))))))
 
 (defun lmc-run (filename input)
   (let ((mem (lmc-load filename)))
