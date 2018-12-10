@@ -36,15 +36,6 @@
   (let ((fmt-err (string-append (string-append "[!] " fmt) "~%")))
     (format t fmt-err args)))
 
-;;; @section Structs
-(defstruct dfa-delta next-state output)
-(defstruct lex-token type payload)
-
-(defstruct pda-delta next-state stack)
-
-(defstruct state acc pc mem in out flag)
-(defstruct halted-state acc pc mem in out flag)
-
 ;;; @section LMC Assembly
 (defstruct lmc-opcode op arity)
 (defstruct lmc-instruction opcode imm)
@@ -120,6 +111,9 @@
 (defvar \wx (append \s (char-list-range 33 255 :range-type 'code)))
 
 ;;; @section Lexer
+(defstruct dfa-delta next-state output)
+(defstruct lex-token type payload)
+
 ;;; Initial and final states
 (defvar *lex-initial-state* "q0")
 (defvar *lex-final-states* (list "q1-ws" "q1-imm" "q2-imm" "q1-nl" "q2-cm"
@@ -130,7 +124,7 @@
 				     (rx-match symbol rx)
 				     (not (rx-match symbol rx)))))
 
-;;; Check if `state` is final
+;;; Checks if `state` is final
 (defun dfa-final (state)
   (not (null (member state *lex-final-states* :test #'string=))))
 
@@ -186,6 +180,8 @@
       (T nil))))
 
 ;;; @section Parser grammar
+(defstruct pda-delta next-state stack)
+
 (defvar *parse-initial-state* "r0")
 (defvar *parse-final-states* (list "r0" "r2-op"))
 
@@ -324,6 +320,9 @@
 
 
 ;;; @section Execution engine
+(defstruct state acc pc mem in out flag)
+(defstruct halted-state acc pc mem in out flag)
+
 (defun lexify (asm)
   (dfa-accept asm *lex-initial-state* "" '()))
 
@@ -342,7 +341,6 @@
 	       (extract-bpt-impl (rest parse) (+ rva 1))))
 	(T (extract-bpt-impl (rest parse) (+ rva 1)))))
 
-;;; @TODO Handle duplicate labels (fail)
 (defun extract-bpt-thunk (parse)
   (extract-bpt-impl parse 0))
 
@@ -433,32 +431,231 @@
 	   (normalize-imm imm))
 	  (T (string-append (bytecode opcode)
 			    (normalize-imm imm :size 2)))))) 
-	  
 
+;; Instructions
+(defun __asm_deref (state va*)
+  (let* ((mem (state-mem state))
+	 (va (mod va* 100)))
+    (parse-integer (nth va mem))))
+
+(defun __asm_hlt (state)
+  (make-halted-state :acc (state-acc state)
+		     :pc (state-pc state)
+		     :mem (state-mem state)
+		     :in (state-in state)
+		     :out (state-out state)
+		     :flag (state-flag state)))
+
+(defun __asm_add (state imm)
+  (let ((op2 (__asm_deref state imm)))
+    (let ((res (+ (state-acc state) op2))
+	  (res-wrap (mod (+ (state-acc state) op2) 1000)))
+      (if (> res 999)
+	  (make-state :acc res-wrap
+		      :pc (state-pc state)
+		      :mem (state-mem state)
+		      :in (state-in state)
+		      :out (state-out state)
+		      :flag 'flag)
+	  (make-state :acc res-wrap
+		      :pc (state-pc state)
+		      :mem (state-mem state)
+		      :in (state-in state)
+		      :out (state-out state)
+		      :flag 'noflag)))))
+
+(defun __asm_sub (state imm)
+  (let ((op2 (__asm_deref state imm)))
+    (let ((res (- (state-acc state) op2))
+	  (res-wrap (mod (- (state-acc state) op2) 1000)))
+      (if (< res 0)
+	  (make-state :acc res-wrap
+		      :pc (state-pc state)
+		      :mem (state-mem state)
+		      :in (state-in state)
+		      :out (state-out state)
+		      :flag 'flag)
+	  (make-state :acc res-wrap
+		      :pc (state-pc state)
+		      :mem (state-mem state)
+		      :in (state-in state)
+		      :out (state-out state)
+		      :flag 'noflag)))))
+
+(defun __asm_sta (state imm)
+  (let* ((mem* (copy-list (state-mem state)))
+	 (op (state-acc state)))
+    (let ((next-mem (replace mem*
+			     (list (normalize-imm (write-to-string op)))
+			     :start1 imm :end1 (+ imm 1))))
+      (make-state :acc op
+		  :pc (state-pc state)
+		  :mem next-mem
+		  :in (state-in state)
+		  :out (state-out state)
+		  :flag (state-flag state)))))
+
+(defun __asm_lda (state imm)
+  (let ((op (parse-integer (nth imm (state-mem state)))))
+    (make-state :acc op
+		:pc (state-pc state)
+		:mem (state-mem state)
+		:in (state-in state)
+		:out (state-out state)
+		:flag (state-flag state))))
+
+(defun __asm_bra (state imm)
+  (let ((branch-target (- imm 1)))
+    (make-state :acc (state-acc state)
+		:pc branch-target
+		:mem (state-mem state)
+		:in (state-in state)
+		:out (state-out state)
+		:flag (state-flag state))))
+
+(defun __asm_brz (state imm)
+  (let ((branch-target (if (and (equal (state-flag state) 'noflag)
+				(= (state-acc state) 0))
+			   (- imm 1)
+			   (state-pc state))))
+    (make-state :acc (state-acc state)
+		:pc branch-target
+		:mem (state-mem state)
+		:in (state-in state)
+		:out (state-out state)
+		:flag (state-flag state))))
+
+(defun __asm_brp (state imm)
+  (let ((branch-target (if (equal (state-flag state) 'noflag)
+			   (- imm 1)
+			   (state-pc state))))
+    (make-state :acc (state-acc state)
+		:pc branch-target
+		:mem (state-mem state)
+		:in (state-in state)
+		:out (state-out state)
+		:flag (state-flag state))))
+
+(defun __asm_inp (state)
+  (let ((in (nth 0 (state-in state))))
+    (if (null in)
+	(__asm_panic state)
+	(make-state :acc (mod in 1000)
+		    :pc (state-pc state)
+		    :mem (state-mem state)
+		    :in (subseq (state-in state) 1)
+		    :out (state-out state)
+		    :flag (state-flag state)))))
+
+(defun __asm_out (state)
+  (let ((out (state-acc state)))
+    (make-state :acc (state-acc state)
+		:pc (state-pc state)
+		:mem (state-mem state)
+		:in (state-in state)
+		:out (append (state-out state) `(,out))
+		:flag (state-flag state))))
+
+(defun __asm_panic (state &optional msg)
+  (unless (null msg)
+      (log-error "[PANIC] ~a" msg))
+  (make-halted-state :acc (state-acc state)
+		     :pc (state-pc state)
+		     :mem (state-mem state)
+		     :in (state-in state)
+		     :out (state-out state)
+		     :flag (state-flag state)))
+   
+(defun __asm (bytecode state)
+  (let* ((bc0 (subseq bytecode 0 1))
+	(imm? (parse-integer (subseq bytecode 1))))
+    (cond ((string= bc0 "0")
+	   (__asm_hlt state))
+	  ((string= bc0 "1")
+	   (__asm_add state imm?))
+	  ((string= bc0 "2")
+	   (__asm_sub state imm?))
+	  ((string= bc0 "3")
+	   (__asm_sta state imm?))
+	  ((string= bc0 "5")
+	   (__asm_lda state imm?))
+	  ((string= bc0 "6")
+	   (__asm_bra state imm?))
+	  ((string= bc0 "7")
+	   (__asm_brz state imm?))
+	  ((string= bc0 "8")
+	   (__asm_brp state imm?))
+	  ((string= bytecode "901")
+	   (__asm_inp state))
+	  ((string= bytecode "902")
+	   (__asm_out state))
+	  (T (__asm_panic state "Invalid Opcode")))))
+	  
 (defun assemble (src)
   (if (null src) nil
       (cons (__emit (first src)) (assemble (rest src)))))
 
-(defun one-instruction (state) nil)
-(defun execution-loop (state) nil)
+(defun one-instruction (state)
+  (let* ((bytecode (nth (state-pc state) (state-mem state))))
+    (let ((next-state (__asm bytecode state)))
+      (if (equal (type-of next-state) 'state)
+	  (make-state :acc (state-acc next-state)
+		      :pc (+ (state-pc next-state) 1)
+		      :mem (state-mem next-state)
+		      :in (state-in next-state)
+		      :out (state-out next-state)
+		      :flag (state-flag next-state))
+	  (make-halted-state :acc (halted-state-acc next-state)
+			     :pc (+ (halted-state-pc next-state) 1)
+			     :mem (halted-state-mem next-state)
+			     :in (halted-state-in next-state)
+			     :out (halted-state-out next-state)
+			     :flag (halted-state-flag next-state))))))
+
+(defun execution-loop (state)
+  (let ((next-state (one-instruction state)))
+    (cond ((equal (type-of next-state) 'halted-state)
+	   (halted-state-out next-state))
+	  ;; No HLT => Terminate
+	  ((= (state-pc next-state) 100)
+	   (log-error "PC out of bounds."))
+	  (T (execution-loop next-state)))))
+
+(defun flat-mem-generate (bin &key (size 100))
+  (append bin (make-list (- size (length bin))
+			 :initial-element (bytecode "hlt"))))
 
 (defun lmc-load (filename)
   (let ((asm (read-file-to-string filename)))
     (if (null asm)
 	(log-error "Could not open file ~a." filename)
+	;; Lex
 	(let ((lex (lexify asm)))
 	  (if (null lex)
 	      (log-error "Lexical error: unrecognized sequence.")
+	      ;; Parse
 	      (let ((parse (parse lex)))
 		(if (null parse)
 		    (log-error "Syntax error: ill-formed sequence.")
+		    ;; Backpatch
 		    (let ((bpt (extract-bpt parse)))
 		      (if (null bpt)
 			  (log-error "Duplicate label detected.")
 			  (let ((src (parse-to-instrs
 				      (patch-parse-bpt parse bpt))))
-			    (assemble src)))))))))))
+			    ;; Assemble
+			    (let ((bin (assemble src)))
+			      (if (> (length bin) 100)
+				  (log-error "Program doesn't fit in memory.")
+				  ;; Generate memory
+				  (flat-mem-generate bin)))))))))))))
 
 (defun lmc-run (filename input)
   (let ((mem (lmc-load filename)))
-    mem))
+    (unless (null mem)
+      (execution-loop (make-state :acc 0
+				:pc 0
+				:mem mem
+				:in input
+				:out '()
+				:flag 'noflag)))))

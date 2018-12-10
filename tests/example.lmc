@@ -4,7 +4,6 @@
 //
 
 __start add 44
-dat
 sub 44
 
 brz __end
