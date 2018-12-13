@@ -600,13 +600,13 @@
     (let ((next-state (__asm bytecode state)))
       (if (equal (type-of next-state) 'state)
 	  (make-state :acc (state-acc next-state)
-		      :pc (+ (state-pc next-state) 1)
+		      :pc (mod (+ (state-pc next-state) 1) 100)
 		      :mem (state-mem next-state)
 		      :in (state-in next-state)
 		      :out (state-out next-state)
 		      :flag (state-flag next-state))
 	  (make-halted-state :acc (halted-state-acc next-state)
-			     :pc (+ (halted-state-pc next-state) 1)
+			     :pc (mod (+ (halted-state-pc next-state) 1) 100)
 			     :mem (halted-state-mem next-state)
 			     :in (halted-state-in next-state)
 			     :out (halted-state-out next-state)
@@ -616,9 +616,6 @@
   (let ((next-state (one-instruction state)))
     (cond ((equal (type-of next-state) 'halted-state)
 	   (halted-state-out next-state))
-	  ;; No HLT => Terminate
-	  ((= (state-pc next-state) 100)
-	   (log-error "PC out of bounds."))
 	  (T (execution-loop next-state)))))
 
 (defun flat-mem-generate (bin &key (size 100))
@@ -654,8 +651,8 @@
   (let ((mem (lmc-load filename)))
     (unless (null mem)
       (execution-loop (make-state :acc 0
-				:pc 0
-				:mem mem
-				:in input
-				:out '()
-				:flag 'noflag)))))
+				  :pc 0
+				  :mem mem
+				  :in input
+				  :out '()
+				  :flag 'noflag)))))
