@@ -28,10 +28,6 @@
 		  str-or-char)))
 	(concatenate 'string str1 str2)))
 
-;;; Elvis operator extension
-(defun ?? (assertee fallback)
-  (if (not (null assertee)) assertee fallback))
-
 (defun log-error (fmt &rest args)
   (let ((fmt-err (string-append (string-append "[!] " fmt) "~%")))
     (format t fmt-err args)))
@@ -323,6 +319,46 @@
 (defstruct state acc pc mem in out flag)
 (defstruct halted-state acc pc mem in out flag)
 
+;; Packs a state struct into a plist
+(defun pack-state (state)
+  (cond ((eq (type-of state) 'state)
+	 (list 'state
+	       :acc (state-acc state)
+	       :pc (state-pc state)
+	       :mem (state-mem state)
+	       :in (state-in state)
+	       :out (state-out state)
+	       :flag (state-flag state)))
+	((eq (type-of state) 'halted-state)
+	 (list 'halted-state
+	       :acc (halted-state-acc state)
+	       :pc (halted-state-pc state)
+	       :mem (halted-state-mem state)
+	       :in (halted-state-in state)
+	       :out (halted-state-out state)
+	       :flag (halted-state-flag state)))
+	(T nil)))
+
+;; Unpacks a plist into a state struct
+(defun unpack-state (state*)
+  (let ((state (subseq state* 1)))
+    (cond ((eq (first state*) 'state)
+	   (make-state :acc (getf state :acc)
+		       :pc (getf state :pc)
+		       :mem (getf state :mem)
+		       :in (getf state :in)
+		       :out (getf state :out)
+		       :flag (getf state :flag)))
+	  ((eq (first state*) 'halted-state)
+	   (make-halted-state :acc (getf state :acc)
+			      :pc (getf state :pc)
+			      :mem (getf state :mem)
+			      :in (getf state :in)
+			      :out (getf state :out)
+			      :flag (getf state :flag)))
+	  (T nil))))
+
+
 (defun lexify (asm)
   (dfa-accept asm *lex-initial-state* "" '()))
 
@@ -331,6 +367,12 @@
 			      symbols
 			      :test #'string=)))
 	  lex))
+
+;;; State plist setter
+(defun setp (plst key value)
+  (let ((plst* (copy-list (rest plst))))
+    (setf (getf plst* key) value)
+    (append (list (first plst)) plst*)))
 
 (defun extract-bpt-impl (parse rva)
   (cond ((null parse) nil)
@@ -596,26 +638,18 @@
       (cons (__emit (first src)) (assemble (rest src)))))
 
 (defun one-instruction (state)
-  (let* ((bytecode (nth (state-pc state) (state-mem state))))
-    (let ((next-state (__asm bytecode state)))
-      (if (equal (type-of next-state) 'state)
-	  (make-state :acc (state-acc next-state)
-		      :pc (mod (+ (state-pc next-state) 1) 100)
-		      :mem (state-mem next-state)
-		      :in (state-in next-state)
-		      :out (state-out next-state)
-		      :flag (state-flag next-state))
-	  (make-halted-state :acc (halted-state-acc next-state)
-			     :pc (mod (+ (halted-state-pc next-state) 1) 100)
-			     :mem (halted-state-mem next-state)
-			     :in (halted-state-in next-state)
-			     :out (halted-state-out next-state)
-			     :flag (halted-state-flag next-state))))))
+  (let ((state (unpack-state state)))
+    (let* ((bytecode (nth (state-pc state) (state-mem state))))
+      (let ((next-state-u (__asm bytecode state)))
+	(let ((next-state (pack-state next-state-u)))
+	  (setp next-state :pc (mod
+				(+ (getf (subseq next-state 1) :pc) 1)
+				100)))))))
 
 (defun execution-loop (state)
   (let ((next-state (one-instruction state)))
-    (cond ((equal (type-of next-state) 'halted-state)
-	   (halted-state-out next-state))
+    (cond ((eq (first next-state) 'halted-state)
+	   (getf (subseq next-state 1) :out))
 	  (T (execution-loop next-state)))))
 
 (defun flat-mem-generate (bin &key (size 100))
@@ -650,9 +684,9 @@
 (defun lmc-run (filename input)
   (let ((mem (lmc-load filename)))
     (unless (null mem)
-      (execution-loop (make-state :acc 0
-				  :pc 0
-				  :mem mem
-				  :in input
-				  :out '()
-				  :flag 'noflag)))))
+      (execution-loop (pack-state (make-state :acc 0
+					      :pc 0
+					      :mem mem
+					      :in input
+					      :out '()
+					      :flag 'noflag))))))
