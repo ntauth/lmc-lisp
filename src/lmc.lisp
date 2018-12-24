@@ -253,21 +253,21 @@
   (cond ((> (length str) 0)
          (let ((next (dfa-delta state (char str 0) mem)))
            (unless (null next)
-             (let* ((mem-next (if (null (dfa-delta-output next))
+             (let ((mem-next (if (null (dfa-delta-output next))
 				 (string-append mem (char str 0))
 				 ""))
-		    (str-next (if (null (dfa-delta-output next))
-				  (subseq str 1)
-				  str)))
-		 (dfa-accept str-next
-                         (dfa-delta-next-state next)
-                         mem-next
-			 (lex-append (dfa-delta-output next) lex))))))
-         ;;; Accept
-	 ((dfa-final state) (lex-append
-			     (dfa-delta-output (dfa-delta state nil mem))
-			     lex))
-         (T nil)))
+		   (str-next (if (null (dfa-delta-output next))
+				 (subseq str 1)
+				 str)))
+	       (dfa-accept str-next
+			   (dfa-delta-next-state next)
+			   mem-next
+			   (lex-append (dfa-delta-output next) lex))))))
+        ;;; Accept
+	((dfa-final state) (lex-append
+			    (dfa-delta-output (dfa-delta state nil mem))
+			    lex))
+	(T nil)))
 
 (defun lex-append (token lex)
   (if (null token)
@@ -303,8 +303,7 @@
 (defun read-file-to-string-impl (in aux)
   (let ((char (read-char in nil 'the-end)))
     (if (characterp char)
-	(read-file-to-string-impl in
-				  (string-append aux char))
+	(read-file-to-string-impl in (string-append aux char))
 	aux)))
 
 (defun read-file-to-string (filename)
@@ -378,7 +377,8 @@
   (cond ((null parse) nil)
 	((string= (lex-token-type (first (first parse)))
 		  "$label")
-	 (cons (cons (lex-token-payload (first (first parse)))
+	 (cons (cons (string-downcase
+		      (lex-token-payload (first (first parse))))
 		     (write-to-string rva))
 	       (extract-bpt-impl (rest parse) (+ rva 1))))
 	(T (extract-bpt-impl (rest parse) (+ rva 1)))))
@@ -387,13 +387,13 @@
   (extract-bpt-impl parse 0))
 
 (defun extract-bpt (parse)
-  (let ((bpt (extract-bpt-thunk parse)))
-    (let ((bpt-sorted (sort (copy-list bpt) #'string<= :key #'car)))
-      (unless (null (reduce (lambda (x y) (cond ((null x) nil)
-						((string= x y) nil)
-						(T y)))
-			    (mapcar #'car bpt-sorted)))
-	bpt))))
+  (let* ((bpt (extract-bpt-thunk parse))
+	 (bpt-sorted (sort (copy-list bpt) #'string<= :key #'car)))
+    (unless (null (reduce (lambda (x y) (cond ((null x) nil)
+					      ((string= x y) nil)
+					      (T y)))
+			  (mapcar #'car bpt-sorted)))
+      bpt)))
 
 ;;; Patches the trimmed instruction with an entry in the BPT
 (defun patch-instr-bpt (instr-t bpt)
@@ -401,10 +401,11 @@
     (if (string= (lex-token-type last-token) "$label")
 	(cons (first instr-t)
 	      (list (make-lex-token :type "$imm"
-				    :payload (cdr (assoc (lex-token-payload
-						     last-token)
-						    bpt
-						    :test #'string=)))))
+				    :payload
+				    (cdr (assoc (string-downcase
+						 (lex-token-payload last-token))
+						 bpt
+						 :test #'string=)))))
 	instr-t)))
 
 ;;; Patches the parsed assembly with the BPT
@@ -438,11 +439,11 @@
 
 (defun parse-to-instrs (parse)
   (mapcar (lambda (x)
-	    (let* ((opcode (lex-token-payload (first x)))
-		   (imm (if (null (second x)) nil
-			    (lex-token-payload (second x)))))
-		   (make-lmc-instruction :opcode opcode
-					 :imm imm)))
+	    (let ((opcode (lex-token-payload (first x)))
+		  (imm (if (null (second x)) nil
+			   (lex-token-payload (second x)))))
+	      (make-lmc-instruction :opcode opcode
+				    :imm imm)))
 	  parse))
   
 (defun parse (lex)
@@ -460,8 +461,7 @@
   (if (null imm)
       nil
       (let ((imm-t (write-to-string
-		    (mod (parse-integer imm)
-			 (expt 10 size)))))
+		    (mod (parse-integer imm) (expt 10 size)))))
 	(normalize-imm-impl imm-t :size (- size (length imm-t))))))
 
 (defun __emit (instr)
@@ -489,53 +489,40 @@
 		     :flag (state-flag state)))
 
 (defun __asm_add (state imm)
-  (let ((op2 (__asm_deref state imm)))
-    (let ((res (+ (state-acc state) op2))
-	  (res-wrap (mod (+ (state-acc state) op2) 1000)))
-      (if (> res 999)
-	  (make-state :acc res-wrap
-		      :pc (state-pc state)
-		      :mem (state-mem state)
-		      :in (state-in state)
-		      :out (state-out state)
-		      :flag 'flag)
-	  (make-state :acc res-wrap
-		      :pc (state-pc state)
-		      :mem (state-mem state)
-		      :in (state-in state)
-		      :out (state-out state)
-		      :flag 'noflag)))))
-
+  (let* ((op2 (__asm_deref state imm))
+	 (res (+ (state-acc state) op2))
+	 (res-wrap (mod (+ (state-acc state) op2) 1000))
+	 (flag (if (> res 999) 'flag 'noflag)))
+    (make-state :acc res-wrap
+		:pc (state-pc state)
+		:mem (state-mem state)
+		:in (state-in state)
+		:out (state-out state)
+		:flag flag)))
+    
 (defun __asm_sub (state imm)
-  (let ((op2 (__asm_deref state imm)))
-    (let ((res (- (state-acc state) op2))
-	  (res-wrap (mod (- (state-acc state) op2) 1000)))
-      (if (< res 0)
-	  (make-state :acc res-wrap
-		      :pc (state-pc state)
-		      :mem (state-mem state)
-		      :in (state-in state)
-		      :out (state-out state)
-		      :flag 'flag)
-	  (make-state :acc res-wrap
-		      :pc (state-pc state)
-		      :mem (state-mem state)
-		      :in (state-in state)
-		      :out (state-out state)
-		      :flag 'noflag)))))
+  (let* ((op2 (__asm_deref state imm))
+	 (res (- (state-acc state) op2))
+	 (res-wrap (mod (- (state-acc state) op2) 1000))
+	 (flag (if (< res 0) 'flag 'noflag)))
+    (make-state :acc res-wrap
+		:pc (state-pc state)
+		:mem (state-mem state)
+		:in (state-in state)
+		:out (state-out state)
+		:flag flag)))
 
 (defun __asm_sta (state imm)
   (let* ((mem* (copy-list (state-mem state)))
-	 (op (state-acc state)))
-    (let ((next-mem (replace mem*
-			     (list (normalize-imm (write-to-string op)))
-			     :start1 imm :end1 (+ imm 1))))
-      (make-state :acc op
-		  :pc (state-pc state)
-		  :mem next-mem
-		  :in (state-in state)
-		  :out (state-out state)
-		  :flag (state-flag state)))))
+	 (op (state-acc state))
+	 (next-mem (replace mem* (list (normalize-imm (write-to-string op)))
+			    :start1 imm :end1 (+ imm 1))))
+    (make-state :acc op
+		:pc (state-pc state)
+		:mem next-mem
+		:in (state-in state)
+		:out (state-out state)
+		:flag (state-flag state))))
 
 (defun __asm_lda (state imm)
   (let ((op (parse-integer (nth imm (state-mem state)))))
@@ -600,7 +587,7 @@
 
 (defun __asm_panic (state &optional msg)
   (unless (null msg)
-      (log-error "[PANIC] ~a" msg))
+    (log-error "[PANIC] ~a" msg))
   (make-halted-state :acc (state-acc state)
 		     :pc (state-pc state)
 		     :mem (state-mem state)
@@ -610,7 +597,7 @@
    
 (defun __asm (bytecode state)
   (let* ((bc0 (subseq bytecode 0 1))
-	(imm? (parse-integer (subseq bytecode 1))))
+	 (imm? (parse-integer (subseq bytecode 1))))
     (cond ((string= bc0 "0")
 	   (__asm_hlt state))
 	  ((string= bc0 "1")
@@ -638,13 +625,13 @@
       (cons (__emit (first src)) (assemble (rest src)))))
 
 (defun one-instruction (state)
-  (let ((state (unpack-state state)))
-    (let* ((bytecode (nth (state-pc state) (state-mem state))))
-      (let ((next-state-u (__asm bytecode state)))
-	(let ((next-state (pack-state next-state-u)))
-	  (setp next-state :pc (mod
-				(+ (getf (subseq next-state 1) :pc) 1)
-				100)))))))
+  (let* ((state (unpack-state state))
+	 (bytecode (nth (state-pc state) (state-mem state)))
+	 (next-state-u (__asm bytecode state))
+	 (next-state (pack-state next-state-u)))
+    (setp next-state :pc (mod
+			  (+ (getf (subseq next-state 1) :pc) 1)
+			  100))))
 
 (defun execution-loop (state)
   (let ((next-state (one-instruction state)))
