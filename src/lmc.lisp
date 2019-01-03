@@ -23,9 +23,11 @@
 
 ;;; Appends a string/character to a string
 (defun string-append (str1 str-or-char)
-  (let ((str2 (if (typep str-or-char 'character)
-		  (char-to-string str-or-char)
-		  str-or-char)))
+  (let ((str2 (if str-or-char
+		  (if (typep str-or-char 'character)
+		      (char-to-string str-or-char)
+		      str-or-char)
+		  "")))
 	(concatenate 'string str1 str2)))
 
 (defun log-error (fmt &rest args)
@@ -54,16 +56,16 @@
 
 ;;; Opcode-to-Bytecode translation table
 (defvar *lmc-bytecode-tbl* (list
-			    (cons "add" "1")
-			    (cons "sub" "2")
-			    (cons "sta" "3")
-			    (cons "lda" "5")
-			    (cons "bra" "6")
-			    (cons "brz" "7")
-			    (cons "brp" "8")
-			    (cons "inp" "901")
-			    (cons "out" "902")
-			    (cons "hlt" "000")))
+			    (cons "add" 1)
+			    (cons "sub" 2)
+			    (cons "sta" 3)
+			    (cons "lda" 5)
+			    (cons "bra" 6)
+			    (cons "brz" 7)
+			    (cons "brp" 8)
+			    (cons "inp" 901)
+			    (cons "out" 902)
+			    (cons "hlt" 0)))
 
 (defun bytecode (opcode)
   (cdr (find opcode *lmc-bytecode-tbl* :key #'car :test #'string=)))
@@ -298,7 +300,6 @@
 	((eq token-type 'comment) (make-lex-token :type "$cm"))
 	(T nil)))
 
-
 ;;; @section IO
 (defun read-file-to-string-impl (in aux)
   (let ((char (read-char in nil 'the-end)))
@@ -440,8 +441,8 @@
 (defun parse-to-instrs (parse)
   (mapcar (lambda (x)
 	    (let ((opcode (lex-token-payload (first x)))
-		  (imm (if (null (second x)) nil
-			   (lex-token-payload (second x)))))
+		  (imm (if (null (second x)) 0
+			   (parse-integer (lex-token-payload (second x))))))
 	      (make-lmc-instruction :opcode opcode
 				    :imm imm)))
 	  parse))
@@ -452,33 +453,19 @@
       (let ((parse-u (parse-unflatten lex-s)))
 	parse-u))))
 
-(defun normalize-imm-impl (imm &key size)
-  (if (<= size 0)
-      imm
-      (normalize-imm-impl (string-append "0" imm) :size (- size 1)))) 
-
-(defun normalize-imm (imm &key (size 3))
-  (if (null imm)
-      nil
-      (let ((imm-t (write-to-string
-		    (mod (parse-integer imm) (expt 10 size)))))
-	(normalize-imm-impl imm-t :size (- size (length imm-t))))))
-
 (defun __emit (instr)
-  (let ((opcode (lmc-instruction-opcode instr))
-	(imm (lmc-instruction-imm instr)))
-    (cond ((and (string= opcode "dat") (null imm))
-	   (normalize-imm "0"))
-	  ((string= opcode "dat")
-	   (normalize-imm imm))
-	  (T (string-append (bytecode opcode)
-			    (normalize-imm imm :size 2)))))) 
+  (let* ((opcode (lmc-instruction-opcode instr))
+	 (imm (mod (lmc-instruction-imm instr) 1000))
+	 (bc (bytecode opcode)))
+    (cond ((string= opcode "dat") imm)
+	  ((< bc 10) (+ (* (bytecode opcode) 100) (mod imm 100)))
+	  (T bc))))
 
 ;; Instructions
 (defun __asm_deref (state va*)
   (let* ((mem (state-mem state))
 	 (va (mod va* 100)))
-    (parse-integer (nth va mem))))
+    (nth va mem)))
 
 (defun __asm_hlt (state)
   (make-halted-state :acc (state-acc state)
@@ -515,8 +502,7 @@
 (defun __asm_sta (state imm)
   (let* ((mem* (copy-list (state-mem state)))
 	 (op (state-acc state))
-	 (next-mem (replace mem* (list (normalize-imm (write-to-string op)))
-			    :start1 imm :end1 (+ imm 1))))
+	 (next-mem (replace mem* (list op) :start1 imm :end1 (+ imm 1))))
     (make-state :acc op
 		:pc (state-pc state)
 		:mem next-mem
@@ -525,7 +511,7 @@
 		:flag (state-flag state))))
 
 (defun __asm_lda (state imm)
-  (let ((op (parse-integer (nth imm (state-mem state)))))
+  (let ((op (nth imm (state-mem state))))
     (make-state :acc op
 		:pc (state-pc state)
 		:mem (state-mem state)
@@ -596,27 +582,27 @@
 		     :flag (state-flag state)))
    
 (defun __asm (bytecode state)
-  (let* ((bc0 (subseq bytecode 0 1))
-	 (imm? (parse-integer (subseq bytecode 1))))
-    (cond ((string= bc0 "0")
+  (multiple-value-bind (bc imm)
+      (floor bytecode 100)
+    (cond ((= bc 0)
 	   (__asm_hlt state))
-	  ((string= bc0 "1")
-	   (__asm_add state imm?))
-	  ((string= bc0 "2")
-	   (__asm_sub state imm?))
-	  ((string= bc0 "3")
-	   (__asm_sta state imm?))
-	  ((string= bc0 "5")
-	   (__asm_lda state imm?))
-	  ((string= bc0 "6")
-	   (__asm_bra state imm?))
-	  ((string= bc0 "7")
-	   (__asm_brz state imm?))
-	  ((string= bc0 "8")
-	   (__asm_brp state imm?))
-	  ((string= bytecode "901")
+	  ((= bc 1)
+	   (__asm_add state imm))
+	  ((= bc 2)
+	   (__asm_sub state imm))
+	  ((= bc 3)
+	   (__asm_sta state imm))
+	  ((= bc 5)
+	   (__asm_lda state imm))
+	  ((= bc 6)
+	   (__asm_bra state imm))
+	  ((= bc 7)
+	   (__asm_brz state imm))
+	  ((= bc 8)
+	   (__asm_brp state imm))
+	  ((= bytecode 901)
 	   (__asm_inp state))
-	  ((string= bytecode "902")
+	  ((= bytecode 902)
 	   (__asm_out state))
 	  (T (__asm_panic state "Invalid Opcode")))))
 	  
@@ -677,3 +663,4 @@
 					      :in input
 					      :out '()
 					      :flag 'noflag))))))
+
