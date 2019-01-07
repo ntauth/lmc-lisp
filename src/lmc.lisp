@@ -35,22 +35,22 @@
     (format t fmt-err args)))
 
 ;;; @section LMC Assembly
-(defstruct lmc-opcode op arity)
+(defstruct lmc-opcode op arity type)
 (defstruct lmc-instruction opcode imm)
 
 ;;; Opcode table
 (defvar *lmc-opcode-tbl* (list
-			  (make-lmc-opcode :op "add" :arity 1)
-			  (make-lmc-opcode :op "sub" :arity 1)
-			  (make-lmc-opcode :op "sta" :arity 1)
-			  (make-lmc-opcode :op "lda" :arity 1)
-			  (make-lmc-opcode :op "bra" :arity 1)
-			  (make-lmc-opcode :op "brz" :arity 1)
-			  (make-lmc-opcode :op "brp" :arity 1)
+			  (make-lmc-opcode :op "add" :arity 1 :type 'imm-or-lbl)
+			  (make-lmc-opcode :op "sub" :arity 1 :type 'imm-or-lbl)
+			  (make-lmc-opcode :op "sta" :arity 1 :type 'imm-or-lbl)
+			  (make-lmc-opcode :op "lda" :arity 1 :type 'imm-or-lbl)
+			  (make-lmc-opcode :op "bra" :arity 1 :type 'imm-or-lbl)
+			  (make-lmc-opcode :op "brz" :arity 1 :type 'imm-or-lbl)
+			  (make-lmc-opcode :op "brp" :arity 1 :type 'imm-or-lbl)
 			  (make-lmc-opcode :op "inp" :arity 0)
 			  (make-lmc-opcode :op "out" :arity 0)
 			  (make-lmc-opcode :op "hlt" :arity 0)
-			  (make-lmc-opcode :op "dat" :arity 1)
+			  (make-lmc-opcode :op "dat" :arity 1 :type 'imm)
 			  (make-lmc-opcode :op "dat" :arity 0)))
 			  
 
@@ -210,27 +210,37 @@
 		       :stack (cons type stack)))
       ((pda-delta-chk state "r0" type "$opcode")
        ;; Lookahead for arity
-       (cond ((or (string= "$label" (lex-token-type token-la))
-		  (string= "$imm" (lex-token-type token-la)))
-	     ;; Arity = 1
-	     (unless (null (opcode payload :arity 1))
-	       (make-pda-delta :next-state "r1-op-1"
-			       :stack (cons type stack))))
-	     ;; Arity = 0
-	     (T (unless (null (opcode payload :arity 0))
-		  (make-pda-delta :next-state "r2-op"
-				:stack stack)))))
-       ((pda-delta-chk state "r1-lbl" type "$opcode")
-	;; Lookahead for arity
-	(cond ((or (string= "$label" (lex-token-type token-la))
-		   (string= "$imm" (lex-token-type token-la)))
-	     ;; Arity = 1
-	     (unless (null (opcode payload :arity 1))
-	       (make-pda-delta :next-state "r1-op-0"
-			       :stack (cons type stack))))
-	     (T (unless (null (opcode payload :arity 0))
-		(make-pda-delta :next-state "r2-op"
-				:stack (rest stack))))))
+       (let ((opcode0 (first (opcode payload :arity 0)))
+	     (opcode1 (first (opcode payload :arity 1))))
+	  (cond ((or (string= "$label" (lex-token-type token-la))
+		     (string= "$imm" (lex-token-type token-la)))
+		 ;; Arity = 1
+		 (unless (null opcode1)
+		   (when (or (and (string= "$imm" (lex-token-type token-la))
+				  (eq (lmc-opcode-type opcode1) 'imm))
+			     (eq (lmc-opcode-type opcode1) 'imm-or-lbl))
+		     (make-pda-delta :next-state "r1-op-1"
+				     :stack (cons type stack)))))
+		;; Arity = 0
+		(T (unless (null opcode0)
+		     (make-pda-delta :next-state "r2-op"
+				     :stack stack))))))
+      ((pda-delta-chk state "r1-lbl" type "$opcode")
+       (let ((opcode0 (first (opcode payload :arity 0)))
+	     (opcode1 (first (opcode payload :arity 1))))
+	 ;; Lookahead for arity
+	 (cond ((or (string= "$label" (lex-token-type token-la))
+		    (string= "$imm" (lex-token-type token-la)))
+		;; Arity = 1
+		(unless (null opcode1)
+		  (when (or (and (string= "$imm" (lex-token-type token-la))
+				 (eq (lmc-opcode-type opcode1) 'imm))
+			    (eq (lmc-opcode-type opcode1) 'imm-or-lbl))
+		      (make-pda-delta :next-state "r1-op-0"
+				      :stack (cons type stack)))))
+	       (T (unless (null opcode0)
+		    (make-pda-delta :next-state "r2-op"
+				    :stack (rest stack)))))))
        ((or (pda-delta-chk state "r1-op-0" type "$imm")
 	    (pda-delta-chk state "r1-op-0" type "$label"))
 	(let* ((delta (make-pda-delta :next-state "r2-op"
@@ -400,17 +410,19 @@
 (defun patch-instr-bpt (instr-t bpt)
   (let ((last-token (first (last instr-t))))
     (if (string= (lex-token-type last-token) "$label")
-	(cons (first instr-t)
-	      (list (make-lex-token :type "$imm"
-				    :payload
-				    (cdr (assoc (string-downcase
-						 (lex-token-payload last-token))
-						 bpt
-						 :test #'string=)))))
+	(let ((payload (cdr (assoc (string-downcase
+				    (lex-token-payload last-token))
+				   bpt
+				   :test #'string=))))
+	  (cons (first instr-t)
+		(list (make-lex-token :type "$imm"
+				      :payload (if (null payload)
+						   'unresolved
+						   payload)))))
 	instr-t)))
 
 ;;; Patches the parsed assembly with the BPT
-(defun patch-parse-bpt (parse bpt)
+(defun patch-parse-bpt-impl (parse bpt)
   (cond ((null parse) nil)
 	(T (let ((instr (first parse)))
 	     (cond ((string= (lex-token-type (first instr)) "$label")
@@ -419,6 +431,14 @@
 			    (patch-parse-bpt (rest parse) bpt))))
 		   (T (cons (patch-instr-bpt instr bpt)
 			    (patch-parse-bpt (rest parse) bpt))))))))
+
+(defun patch-parse-bpt (parse bpt)
+  (let ((pparse (patch-parse-bpt-impl parse bpt)))
+    (unless (null pparse)
+      (if (member (make-lex-token :type "$imm" :payload 'unresolved) pparse
+		  :key (lambda (x) (first (last x))) :test #'equalp)
+	  nil
+	  pparse))))
 
 (defun parse-unflatten (parse)
   (parse-unflatten-impl parse '() '()))
@@ -442,7 +462,8 @@
   (mapcar (lambda (x)
 	    (let ((opcode (lex-token-payload (first x)))
 		  (imm (if (null (second x)) 0
-			   (parse-integer (lex-token-payload (second x))))))
+			   (parse-integer (lex-token-payload (second x))
+					  :junk-allowed T))))
 	      (make-lmc-instruction :opcode opcode
 				    :imm imm)))
 	  parse))
