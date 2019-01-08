@@ -625,20 +625,20 @@
 	   (__asm_inp state))
 	  ((= bytecode 902)
 	   (__asm_out state))
-	  (T (__asm_panic state "Invalid Opcode")))))
+	  (T (__asm_panic state (format nil "~a: ~a" "Invalid Opcode"
+					(write-to-string bytecode)))))))
 	  
 (defun assemble (src)
   (if (null src) nil
       (cons (__emit (first src)) (assemble (rest src)))))
 
 (defun one-instruction (state)
-  (let* ((state (unpack-state state))
-	 (bytecode (nth (state-pc state) (state-mem state)))
-	 (next-state-u (__asm bytecode state))
-	 (next-state (pack-state next-state-u)))
-    (setp next-state :pc (mod
-			  (+ (getf (subseq next-state 1) :pc) 1)
-			  100))))
+  (unless (eq (first state) 'halted-state)
+    (let* ((state (unpack-state state))
+	   (bytecode (nth (state-pc state) (state-mem state)))
+	   (next-state-u (__asm bytecode state))
+	   (next-state (pack-state next-state-u)))
+      (setp next-state :pc (mod (+ (getf (subseq next-state 1) :pc) 1) 100)))))
 
 (defun execution-loop (state)
   (let ((next-state (one-instruction state)))
