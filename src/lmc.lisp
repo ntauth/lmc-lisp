@@ -22,7 +22,7 @@
   (format nil "~a" char))
 
 ;;; Appends a string/character to a string
-(defun string-append (str1 str-or-char)
+(defun my-string-append (str1 str-or-char)
   (let ((str2 (if str-or-char
 		  (if (typep str-or-char 'character)
 		      (char-to-string str-or-char)
@@ -31,7 +31,7 @@
 	(concatenate 'string str1 str2)))
 
 (defun log-error (fmt &rest args)
-  (let ((fmt-err (string-append (string-append "[!] " fmt) "~%")))
+  (let ((fmt-err (my-string-append (my-string-append "[!] " fmt) "~%")))
     (format t fmt-err args)))
 
 ;;; @section LMC Assembly
@@ -266,7 +266,7 @@
          (let ((next (dfa-delta state (char str 0) mem)))
            (unless (null next)
              (let ((mem-next (if (null (dfa-delta-output next))
-				 (string-append mem (char str 0))
+				 (my-string-append mem (char str 0))
 				 ""))
 		   (str-next (if (null (dfa-delta-output next))
 				 (subseq str 1)
@@ -314,7 +314,7 @@
 (defun read-file-to-string-impl (in aux)
   (let ((char (read-char in nil 'the-end)))
     (if (characterp char)
-	(read-file-to-string-impl in (string-append aux char))
+	(read-file-to-string-impl in (my-string-append aux char))
 	aux)))
 
 (defun read-file-to-string (filename)
